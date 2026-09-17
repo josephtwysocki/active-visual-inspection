@@ -35,7 +35,7 @@ TERMINATE LOG  ESCALATE
 
 We start with a simulated world. Within that world, there are three fixed RGB cameras that are continuosly monitoring a property for smoke detection. This monitoring creats a `MonitoringEvent`.  
   
-From there, we move into orchestration. This is where `InpsectionRequests` are created.  
+From there, we move into orchestration. This is where `InspectionRequests` are created.  
   
 These requests then lead to drone inspections, which generate `InspectionResults`.  
   
