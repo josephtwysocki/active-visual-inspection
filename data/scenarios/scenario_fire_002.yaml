@@ -1,0 +1,16 @@
+scenario_id: fire_002
+
+event:
+  type: dangerous_fire
+  cause: lightning
+  location:
+    x: 430
+    y: 720
+
+conditions:
+  visibility: clear
+  wind: medium
+
+expected:
+  monitoring_detection: true
+  final_decision: escalate
