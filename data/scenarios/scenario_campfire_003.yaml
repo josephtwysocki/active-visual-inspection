@@ -1,0 +1,15 @@
+scenario_id: campfire_003
+
+event:
+  type: campfire
+  location:
+    x: 600
+    y: 480
+
+conditions:
+  visibility: low
+  wind: medium
+
+expected:
+  monitoring_detection: true
+  final_decision: log
