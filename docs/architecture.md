@@ -39,4 +39,33 @@ From there, we move into orchestration. This is where `InspectionRequests` are c
   
 These requests then lead to drone inspections, which generate `InspectionResults`.  
   
-Finally, we end up at a general orchestration layer that decides upon a final decision: terminate, log, or escalate.
+Finally, we end up at a general orchestration layer that decides upon a final decision: terminate, log, or escalate.  
+  
+**Hardware Architecture**  
+```
+MY LAPTOP
+────────────────────────
+VS Code
+Python
+OpenCV
+Git/GitHub
+CV models
+Orchestration
+Evaluation
+Scenario configuration
+        │
+        │ Project AirSim API
+        ▼
+        
+SIMULATION COMPUTE
+────────────────────────
+Project AirSim
+Unreal Engine
+GPU rendering
+150-acre environment
+Drone
+3 fixed cameras
+        │
+        ▼
+     AWS GPU
+```
