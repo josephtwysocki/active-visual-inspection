@@ -47,6 +47,8 @@ separate from the future property-coordinate interface.
 from __future__ import annotations
 import asyncio
 import copy
+import math
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -135,6 +137,9 @@ class ProjectAirSimAdapter:
         # Keep the subscription object so the subscription remains active for the
         # lifetime of the adapter.
         self._rgb_subscription = None
+        self._rgb_camera_started = False
+        self._rgb_frame_sequence = 0
+        self._rgb_lock = Lock()
 
     # ------------------------------------------------------------------
     # CONNECTION MANAGEMENT
@@ -194,6 +199,10 @@ class ProjectAirSimAdapter:
         self.client = None
         self.world = None
         self.drone = None
+        with self._rgb_lock:
+            self._rgb_camera_started = False
+            self._latest_rgb_frame = None
+        self._rgb_subscription = None
 
     # ------------------------------------------------------------------
     # INTERNAL HELPERS
@@ -479,7 +488,9 @@ class ProjectAirSimAdapter:
         )
 
         # Store the latest decoded frame for retrieval by application code.
-        self._latest_rgb_frame = rgb_frame
+        with self._rgb_lock:
+            self._latest_rgb_frame = rgb_frame
+            self._rgb_frame_sequence += 1
 
 
     def start_rgb_camera(
@@ -511,7 +522,10 @@ class ProjectAirSimAdapter:
 
         # Ensure we cannot accidentally return a frame retained from an earlier
         # subscription.
-        self._latest_rgb_frame = None
+        with self._rgb_lock:
+            if self._rgb_camera_started:
+                raise RuntimeError("RGB camera is already started.")
+            self._latest_rgb_frame = None
 
         # The value stored here is a Project AirSim topic identifier, not an
         # object with its own subscribe() method.
@@ -521,6 +535,8 @@ class ProjectAirSimAdapter:
             rgb_topic,
             self._on_rgb_frame,
         )
+        with self._rgb_lock:
+            self._rgb_camera_started = True
 
 
     def get_drone_rgb(self) -> np.ndarray | None:
@@ -536,10 +552,62 @@ class ProjectAirSimAdapter:
         modify the frame stored internally by the adapter.
         """
 
-        if self._latest_rgb_frame is None:
-            return None
+        with self._rgb_lock:
+            if self._latest_rgb_frame is None:
+                return None
+            return self._latest_rgb_frame.copy()
 
-        return self._latest_rgb_frame.copy()
+    async def capture_drone_rgb(
+        self,
+        timeout_sec: float = 5.0,
+    ) -> np.ndarray:
+        """Wait for a new RGB frame received after this capture request.
+
+        Call after dispatch confirms arrival. An image already cached when
+        this coroutine starts executing cannot satisfy the request. Freshness
+        uses callback receipt order, not a simulator exposure timestamp.
+
+        The wait yields to the event loop and returns an independent image
+        copy. Camera subscription details remain inside this adapter.
+
+        Raises
+        ------
+        RuntimeError
+            If the drone is disconnected or the RGB camera is not started.
+        ValueError
+            If the timeout is not finite and positive.
+        TimeoutError
+            If no new frame is available within the timeout.
+        """
+        if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+            raise ValueError("timeout_sec must be finite and positive.")
+        self._require_drone()
+
+        with self._rgb_lock:
+            if not self._rgb_camera_started:
+                raise RuntimeError("Call start_rgb_camera() before capturing RGB.")
+            starting_sequence = self._rgb_frame_sequence
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_sec
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"No new drone RGB frame received within {timeout_sec:.2f} seconds."
+                )
+
+            with self._rgb_lock:
+                if not self._rgb_camera_started:
+                    raise RuntimeError("RGB camera disconnected during capture.")
+                if (
+                    self._rgb_frame_sequence > starting_sequence
+                    and self._latest_rgb_frame is not None
+                ):
+                    return self._latest_rgb_frame.copy()
+
+            await asyncio.sleep(min(0.05, remaining))
 
     # ------------------------------------------------------------------
     # RETURN HOME

@@ -2,44 +2,74 @@
 
 This document describes the project-owned payloads passed between the major subsystems of Active Visual Inspection.
 
-The interfaces define the boundaries between:
+**Current implementation: through Week 5, validated on October 12, 2026.**
 
-```text
-perception
-    ↓
-monitoring
-    ↓
-dispatch
-    ↓
-simulation
-    ↓
-future inspection / decision logic
-```
+The implemented boundary now includes monitoring, dispatch, and active inspection. Mission decisions remain proposed Week 6 work.
 
-The goal is to keep responsibilities separated so that perception code does not directly control the drone and simulator-specific details do not leak into higher-level mission logic.
+## Interface Overview
 
-As the project develops, these interfaces should reflect capabilities that actually exist. Fields should not be added solely because they may be useful in a future version.
+| Interface | Responsibility | Current implementation |
+| --- | --- | --- |
+| `DetectionResult` | Report normalized smoke-model output for an image | `src/perception/smoke_detector.py` |
+| `MonitoringEvent` | Describe a monitoring observation that warrants investigation | `src/monitoring/monitoring_event.py` |
+| `InspectionRequest` | Request investigation of a monitoring region | `src/dispatch/inspection_request.py` |
+| `InspectionTarget` | Represent the predefined NED target for that region | `src/dispatch/search_regions.py` |
+| `DispatchResult` | Report the target, actual position, and arrival status | `src/dispatch/dispatcher.py` |
+| `InspectionResult` | Report execution status and the new drone observation | `src/inspection/inspection_result.py` |
+| `MissionOutcome` | Describe the response chosen from an inspection result | Proposed; not implemented at Week 5 closeout |
+
+The same perception implementation supports both monitoring imagery and new drone inspection imagery. These are separate observations, even when they use the same detector.
 
 ---
 
-# MonitoringEvent
+## DetectionResult
 
-> **"The monitoring system saw something that warrants investigation."**
+**“This is what the smoke detector reported for this image.”**
 
-`MonitoringEvent` is produced by the passive monitoring pipeline when perception identifies an event that should trigger further investigation.
+`SmokeDetector.detect()` accepts an image file path or NumPy image and returns a normalized `DetectionResult`. Raw Roboflow response structures remain inside the perception implementation.
 
-Current implementation:
-
-```text
-src/monitoring/monitoring_event.py
+```python
+DetectionResult(
+    detected=True,
+    detections=[
+        SmokeDetection(
+            confidence=0.70,
+            label="smoke",
+            bbox=(91, 0, 400, 180),
+        )
+    ],
+    image_width=400,
+    image_height=225,
+)
 ```
 
-## Structure
+| Field | Meaning |
+| --- | --- |
+| `detected` | Whether at least one qualifying smoke detection was retained |
+| `detections` | List of normalized `SmokeDetection` objects |
+| `image_width` | Source image width in pixels |
+| `image_height` | Source image height in pixels |
+
+Each `SmokeDetection` contains a model confidence, label, and bounding box in `(x1, y1, x2, y2)` pixel coordinates.
+
+The current implementation retains smoke predictions meeting the configured confidence threshold. Its default threshold is `0.5`. Other model classes are filtered out.
+
+`detected=False` means no qualifying smoke prediction was retained. It does not prove that no fire exists. Model confidence is a score associated with a prediction; this project has not established it as a calibrated probability of fire or danger.
+
+These perception dataclasses do not currently define `to_dict()` methods. Their project-owned fields can be serialized with `dataclasses.asdict()` when needed.
+
+---
+
+## MonitoringEvent
+
+**“The monitoring system saw something that warrants investigation.”**
+
+A monitoring event preserves the triggering observation and its logical search region.
 
 ```python
 MonitoringEvent(
     camera_id="camera_1",
-    timestamp="2026-10-06T10:30:00",
+    timestamp="2026-10-12T19:53:40+00:00",
     event_type="suspected_smoke",
     confidence=0.70,
     image_bbox=(91, 0, 400, 180),
@@ -47,514 +77,253 @@ MonitoringEvent(
 )
 ```
 
-Serialized representation:
+| Field | Meaning |
+| --- | --- |
+| `camera_id` | Monitoring camera identifier |
+| `timestamp` | ISO-formatted event creation timestamp |
+| `event_type` | Project-owned event description; currently `suspected_smoke` |
+| `confidence` | Highest confidence among the qualifying smoke detections used to create the event |
+| `image_bbox` | Bounding box of that primary detection in the monitoring image |
+| `search_region_id` | Logical region associated with the monitoring observation |
 
-```json
-{
-  "camera_id": "camera_1",
-  "timestamp": "2026-10-06T10:30:00",
-  "event_type": "suspected_smoke",
-  "confidence": 0.70,
-  "image_bbox": [91, 0, 400, 180],
-  "search_region_id": "sector_test"
-}
-```
+`create_monitoring_event()` returns `None` for a negative `DetectionResult`. For a positive result, it uses the highest-confidence detection as the primary trigger.
 
-## Fields
+`MonitoringEvent.to_dict()` returns a serializable dictionary. When encoded as JSON, the bounding-box tuple becomes an array.
 
-### `camera_id`
+Timestamps are ISO strings; the current interface does not require timezone awareness. New integration-test events use timezone-aware UTC timestamps. The event timestamp is not a simulator camera-exposure timestamp.
 
-Identifier for the monitoring camera that produced the observation.
-
-### `timestamp`
-
-ISO-formatted timestamp representing when the monitoring event was created.
-
-### `event_type`
-
-Project-owned description of the event detected by the monitoring system.
-
-Current V1 value:
-
-```text
-suspected_smoke
-```
-
-### `confidence`
-
-Confidence associated with the primary detection that triggered the event.
-
-If multiple smoke detections are present, the highest-confidence detection is currently used as the primary trigger.
-
-### `image_bbox`
-
-Bounding box of the primary detection in the source image.
-
-Format:
-
-```text
-(x1, y1, x2, y2)
-```
-
-The bounding box is retained as evidence/provenance. It is **not currently used to calculate the drone's world position**.
-
-### `search_region_id`
-
-Identifier for the predefined monitoring region associated with the event.
-
-Example:
-
-```text
-sector_test
-```
-
-This provides the logical location that the dispatch system can later resolve into an inspection target.
+The bounding box preserves image provenance. It is not used to calculate world coordinates.
 
 ---
 
-# InspectionRequest
+## InspectionRequest
 
-> **"Investigate the event detected in this monitoring region."**
-
-`InspectionRequest` is the mission-level request created from a `MonitoringEvent`.
-
-It represents the boundary between monitoring and drone dispatch.
-
-Current implementation:
-
-```text
-src/dispatch/inspection_request.py
-```
-
-## Structure
+**“Investigate the event detected in this monitoring region.”**
 
 ```python
 InspectionRequest(
-    inspection_id="inspection_7cf06179",
+    inspection_id="inspection_988cb783",
     source_event=monitoring_event,
     reason="suspected_smoke",
     search_region_id="sector_test",
 )
 ```
 
-Conceptual serialized representation:
+| Field | Meaning |
+| --- | --- |
+| `inspection_id` | Identifier for this inspection, currently generated as `inspection_<8 hex characters>` |
+| `source_event` | Complete `MonitoringEvent` that triggered the request |
+| `reason` | Request reason, derived from `source_event.event_type` |
+| `search_region_id` | Logical monitoring region to investigate |
 
-```json
-{
-  "inspection_id": "inspection_7cf06179",
-  "source_event": {
-    "camera_id": "camera_1",
-    "timestamp": "2026-10-06T10:30:00",
-    "event_type": "suspected_smoke",
-    "confidence": 0.70,
-    "image_bbox": [91, 0, 400, 180],
-    "search_region_id": "sector_test"
-  },
-  "reason": "suspected_smoke",
-  "search_region_id": "sector_test"
-}
-```
+`create_inspection_request(event)` generates the identifier and copies the event type and logical region into the request.
 
-## Fields
+Keeping `source_event` preserves the monitoring camera, timestamp, confidence, and bounding box without duplicating those fields. `InspectionRequest.to_dict()` serializes the nested event.
 
-### `inspection_id`
-
-Unique identifier for the requested inspection.
-
-Current V1 IDs use the form:
-
-```text
-inspection_<generated identifier>
-```
-
-### `source_event`
-
-The complete `MonitoringEvent` that caused the inspection request.
-
-Keeping the source event preserves provenance without duplicating monitoring-specific fields such as:
-
-- camera ID;
-- confidence;
-- detection bounding box;
-- monitoring timestamp.
-
-For example:
-
-```python
-request.source_event.camera_id
-request.source_event.confidence
-request.source_event.image_bbox
-```
-
-remain available to downstream code.
-
-### `reason`
-
-Reason the inspection was requested.
-
-For the current workflow this is derived from:
-
-```python
-MonitoringEvent.event_type
-```
-
-Current example:
-
-```text
-suspected_smoke
-```
-
-### `search_region_id`
-
-Logical monitoring region that should be investigated.
-
-Example:
-
-```text
-sector_test
-```
-
-The request deliberately contains a logical region rather than Project AirSim coordinates.
+The request contains a logical region. It does not contain simulator coordinates or a final mission decision.
 
 ---
 
-# InspectionTarget
+## InspectionTarget
 
-> **"This is the predefined physical position associated with the requested monitoring region."**
-
-`InspectionTarget` represents a known NED coordinate used for drone dispatch.
-
-Current implementation:
-
-```text
-src/dispatch/search_regions.py
-```
-
-## Structure
+**“This is the predefined physical position associated with the requested region.”**
 
 ```python
-InspectionTarget(
-    north=5.0,
-    east=10.0,
-    down=-5.0,
-)
+InspectionTarget(north=5.0, east=10.0, down=-5.0)
 ```
 
-## Fields
+| Field | Meaning |
+| --- | --- |
+| `north` | North coordinate in meters |
+| `east` | East coordinate in meters |
+| `down` | Down coordinate in meters |
 
-### `north`
+These coordinates use Project AirSim's NED convention. More negative `down` values represent higher positions relative to the simulator origin.
 
-North coordinate in the current Project AirSim NED coordinate system.
+`resolve_search_region("sector_test")` currently returns the target above. Unknown regions raise `ValueError`; there is no fallback target.
 
-### `east`
-
-East coordinate in the current Project AirSim NED coordinate system.
-
-### `down`
-
-Vertical coordinate in the current Project AirSim NED coordinate system.
-
-Because NED uses positive-down coordinates, increasingly negative values represent greater altitude above the origin.
-
-## Region Resolution
-
-The dispatch layer resolves:
-
-```text
-search_region_id
-        ↓
-InspectionTarget
-```
-
-For example:
-
-```text
-sector_test
-        ↓
-north=5.0
-east=10.0
-down=-5.0
-```
-
-Unknown search regions must fail explicitly rather than silently falling back to another target.
-
-For V1, inspection targets are predefined.
-
-The system does **not** currently calculate world coordinates from:
-
-- detection bounding boxes;
-- camera intrinsics;
-- depth imagery;
-- ray casting;
-- triangulation;
-- other localization methods.
+V1 uses predefined region-to-target mappings. Bounding-box localization, ray casting, triangulation, and a full property-coordinate transformation remain outside the implemented workflow.
 
 ---
 
-# DispatchResult
+## DispatchResult
 
-> **"The drone was sent to the requested target; this describes whether it arrived."**
-
-`DispatchResult` represents the outcome of the drone-dispatch operation.
-
-It should not be confused with `InspectionResult`.
-
-A `DispatchResult` answers:
-
-> **Did the drone reach the requested inspection location?**
-
-An eventual `InspectionResult` will answer:
-
-> **What did the drone discover after arriving?**
-
-Current implementation:
-
-```text
-src/dispatch/dispatcher.py
-```
-
-## Structure
-
-Conceptually:
+**“Did the drone reach the requested inspection location?”**
 
 ```python
 DispatchResult(
     target=inspection_target,
     actual_north=5.00,
     actual_east=9.98,
-    actual_down=-5.53,
+    actual_down=-5.54,
     arrived=True,
 )
 ```
 
-## Fields
+| Field | Meaning |
+| --- | --- |
+| `target` | Requested `InspectionTarget` |
+| `actual_north` | Actual north position after movement |
+| `actual_east` | Actual east position after movement |
+| `actual_down` | Actual down position after movement |
+| `arrived` | Whether all three coordinate errors meet the configured tolerance |
 
-### `target`
+The dispatcher and Week 5 integration test currently use a default arrival tolerance of **1.0 meter per axis**. This is an axis-wise check, not a spherical distance threshold.
 
-The `InspectionTarget` requested for the dispatch.
+`DispatchResult` is a dataclass without a custom `to_dict()` method. The integration trace serializes it with `dataclasses.asdict()`.
 
-### `actual_north`
-
-Drone's actual north coordinate after movement completes.
-
-### `actual_east`
-
-Drone's actual east coordinate after movement completes.
-
-### `actual_down`
-
-Drone's actual down coordinate after movement completes.
-
-### `arrived`
-
-Boolean indicating whether the actual drone position falls within the accepted arrival tolerance.
-
-The current Week 4 integration flow uses a tolerance of:
-
-```text
-±1.0 meter per axis
-```
-
-Exact floating-point equality is not required.
+Dispatch success does not establish that inspection completed or that smoke exists. Return-home and landing are caller-owned cleanup operations rather than fields on `DispatchResult`.
 
 ---
 
-# Current End-to-End Interface Flow
+## Drone RGB Capture Boundary
 
-As of the completion of Week 4, the implemented system boundary is:
+Simulator subscriptions and image decoding remain inside `ProjectAirSimAdapter`.
 
-```text
-SmokeDetector
-      ↓
-DetectionResult
-      ↓
-MonitoringEvent
-      ↓
-InspectionRequest
-      ↓
-search_region_id
-      ↓
-InspectionTarget
-      ↓
-InspectionDispatcher
-      ↓
-ProjectAirSimAdapter
-      ↓
-Drone movement
-      ↓
-DispatchResult
-```
+| Adapter method | Behavior |
+| --- | --- |
+| `start_rgb_camera(camera_name="DownCamera")` | Start the RGB subscription once per connection |
+| `get_drone_rgb()` | Return a copy of the latest cached frame, or `None` |
+| `await capture_drone_rgb(timeout_sec=5.0)` | Wait for a newly processed camera callback after the capture request starts; return an independent NumPy image copy |
 
-The important separation of responsibilities is:
+Frames have shape `(height, width, 3)` and dtype `uint8`, using the adapter's RGB convention. The live scene produced `(225, 400, 3)` frames.
 
-```text
-Perception
-    │
-    │ reports what was detected
-    ▼
-Monitoring
-    │
-    │ creates a structured event
-    ▼
-Dispatch
-    │
-    │ requests and coordinates movement
-    ▼
-Simulation
-    │
-    │ executes simulator-specific commands
-    ▼
-Project AirSim
-```
+`capture_drone_rgb()` rejects nonpositive or nonfinite timeouts, requires a connected drone and started camera, and raises `TimeoutError` when no new frame becomes available. It also detects camera disconnection during the wait.
 
-Perception code does not directly control the drone.
+Freshness uses callback processing order. It does not verify a simulator exposure timestamp or eliminate all possible transport buffering. The caller requests capture immediately after confirmed arrival. A frame already cached when the request begins cannot satisfy it.
 
-Monitoring code does not directly call Project AirSim.
-
-Dispatch code interacts with Project AirSim through `ProjectAirSimAdapter` rather than directly using simulator APIs.
+The inspection layer does not subscribe directly to Project AirSim topics.
 
 ---
 
-# Future Interface — InspectionResult
+## InspectionResult
 
-> **"The drone arrived and investigated the event. This is what it found."**
+**“This describes whether inspection completed and what the drone observation reported.”**
 
-`InspectionResult` is the next major project interface, but it is **not yet finalized or implemented**.
+`InspectionResult` is now implemented as a frozen dataclass with validated field combinations.
 
-It will eventually represent the result of active inspection after the drone reaches its requested inspection region.
+The live Week 5 run produced:
 
-The expected future flow is:
-
-```text
-InspectionRequest
-      ↓
-Dispatch
-      ↓
-Drone arrives
-      ↓
-Capture close-range evidence
-      ↓
-Inspection perception
-      ↓
-InspectionResult
+```json
+{
+  "inspection_id": "inspection_988cb783",
+  "completed": true,
+  "detected": true,
+  "confidence": 0.6585273146629333,
+  "evidence_path": "data/test_outputs/inspections/inspection_308c2b0ffd074cd39611dd71be46adea_rgb.png",
+  "error": null
+}
 ```
 
-Potential information may include concepts such as:
+Path separators in serialized results follow the host operating system. The example above uses forward slashes for readability.
 
-```text
-inspection_id
-classification
-confidence
-inspection evidence
-observations
+### Fields and Valid States
+
+| Field | Meaning |
+| --- | --- |
+| `inspection_id` | Identifier preserved from the associated request |
+| `completed` | Whether evidence capture, saving, perception, and result construction completed |
+| `detected` | `True` for smoke reported, `False` for no qualifying smoke detection, or `None` for failed inspection |
+| `confidence` | Highest qualifying smoke confidence; `None` for negative or failed inspection |
+| `evidence_path` | Path to the saved new drone image; may remain available after a later failure |
+| `error` | Failure description; `None` for completed inspection |
+
+| Outcome | `completed` | `detected` | `confidence` | `evidence_path` | `error` |
+| --- | --- | --- | --- | --- | --- |
+| Smoke reported | `True` | `True` | Score in `[0, 1]` | Required | `None` |
+| No smoke reported | `True` | `False` | `None` | Required | `None` |
+| Inspection failed | `False` | `None` | `None` | Optional | Required |
+
+An empty inspection identifier is invalid. Completed inspections require a nonempty evidence path. The result constructor records the path; it does not itself check file existence. The inspector writes the image, and the live integration script verifies that the file exists.
+
+Negative inspection has no confidence-of-absence score because the current detector does not provide one. Inspection failure has no detection outcome because the observation was not successfully established.
+
+`completed` does not describe flight cleanup, final mission status, human review, or detector correctness. A completed inspection can contain a false positive or false negative.
+
+`InspectionResult.to_dict()` returns a JSON-serializable dictionary. Python `None` becomes JSON `null`.
+
+### Inspector Contract
+
+```python
+inspector = Inspector(adapter, detector)
+result = await inspector.inspect(request, dispatch_result)
 ```
 
-The exact structure should be defined when the active-inspection capability is implemented.
+`Inspector` is implemented in `src/inspection/inspector.py` and:
 
-Do not treat these potential fields as part of the current interface contract.
+1. Rejects an unconfirmed arrival without capturing evidence.
+2. Checks that the dispatch target matches the request's resolved region.
+3. Requests a fresh RGB frame from the adapter.
+4. Saves the frame as a uniquely named PNG under the configured output directory.
+5. Reuses `SmokeDetector.detect()` on the exact saved image.
+6. Converts the normalized perception output into `InspectionResult`.
+
+The inspector's capture timeout defaults to `10.0` seconds. Saved RGB imagery is converted to OpenCV's BGR write convention before PNG encoding. File-based inference avoids ambiguity about the SDK's NumPy color convention.
+
+Operational exceptions become failed inspection results with a stage-specific error description. Cancellation propagates. If saving succeeded before perception failed, `evidence_path` is retained.
+
+The caller owns connection, camera startup, takeoff, dispatch, return-home, landing, and shutdown. The inspector does not choose mission responses or operate flight cleanup.
 
 ---
 
-# Future Interface — MissionOutcome
+## Current Execution and Evidence Trace
 
-> **"Given the inspection result, this is what the system decided to do."**
+The Week 5 live integration entry point is:
 
-`MissionOutcome` is also a future interface and is **not yet finalized or implemented**.
-
-Eventually, an `InspectionResult` may lead to outcomes such as:
-
-```text
-benign campfire
-      ↓
-log / terminate mission
+```powershell
+python -m scripts.test_active_inspection
 ```
 
-or:
+It starts with a synthetic `MonitoringEvent` and uses real Project AirSim drone imagery for inspection. Monitoring inference is not rerun in this test.
 
-```text
-dangerous fire
-      ↓
-escalate to human
+The script saves a trace with these top-level keys:
+
+```json
+{
+  "synthetic_monitoring_trigger": true,
+  "inspection_evidence_source": "Project AirSim DownCamera",
+  "request": {},
+  "dispatch": {},
+  "inspection": {}
+}
 ```
 
-A future representation may contain concepts such as:
+The empty objects above show the trace envelope only. Actual traces contain the full serialized payloads, including the monitoring event nested inside `request.source_event`.
 
-```text
-inspection_id
-decision
-status
-```
+PNG evidence and `<inspection_id>_trace.json` are stored under `data/test_outputs/inspections/`. Image filenames use a separate generated identifier; `InspectionResult.evidence_path` provides the association with the request. The image filename is not the request identifier.
 
-The exact structure should be defined only when decision and escalation behavior is implemented.
+The trace is written before an incomplete inspection causes the integration test to raise. Errors before a result is available can terminate the script without producing this trace.
+
+Cleanup attempts return-home and landing after takeoff, including after inspection failure. Landing is attempted even if return-home fails. The script does not disarm following a failed landing. It reports cleanup errors and prints `PASS` only after inspection and cleanup succeed.
+
+### Week 5 Validation and Known Limitation
+
+On October 12, 2026, inspection `inspection_988cb783` reached the target with approximate axis errors of `0.00`, `0.02`, and `0.54` meters. It captured and saved drone evidence, produced the result above, and returned home and landed.
+
+The Blocks scene was known to contain no intended smoke event. The detector nevertheless reported smoke at approximately `0.659` confidence. Record this as a known false positive, preserving the image and trace as evaluation evidence.
+
+This run validates the live inspection pipeline. It does not validate smoke-model accuracy or demonstrate correct identification of a real fire. Positive, negative, and failed result states were also checked locally with controlled dependencies; a live negative inspection was not established by this particular run.
 
 ---
 
-# Interface Design Principles
+## Future Interface — MissionOutcome
 
-## Preserve subsystem boundaries
+**“Given the inspection result, this is the response the system chose.”**
 
-Higher-level application code should communicate through project-owned interfaces rather than reaching directly into another subsystem's implementation.
+`MissionOutcome` remains unimplemented at Week 5 closeout. [week_6_setup.md](week_6_setup.md) proposes the initial fields `inspection_id`, `decision`, and `reason`, with deterministic responses for positive, negative, and failed inspections.
 
-Prefer:
+The current smoke-only observation does not classify campfires or dangerous fires. That eventual V1 distinction requires additional evidence and an explicit classification capability.
 
-```text
-MonitoringEvent
-      ↓
-InspectionRequest
-      ↓
-InspectionDispatcher
-      ↓
-ProjectAirSimAdapter
-```
-
-Avoid:
-
-```text
-SmokeDetector
-      ↓
-ProjectAirSimAdapter.move_to_ned(...)
-```
+A future human-review decision must also remain distinct from successful notification delivery or an actual human decision.
 
 ---
 
-## Preserve provenance
+## Interface Design Principles
 
-An inspection should retain enough information to determine what caused it.
-
-For the current implementation, `InspectionRequest.source_event` preserves the complete triggering `MonitoringEvent`.
-
----
-
-## Avoid duplicated state
-
-Information that already exists on `MonitoringEvent` should generally remain accessible through `InspectionRequest.source_event` rather than being copied into additional fields.
-
----
-
-## Keep logical and simulator coordinates separate
-
-Monitoring produces a logical location:
-
-```text
-search_region_id="sector_test"
-```
-
-Dispatch resolves that location into a simulator target:
-
-```text
-north=5.0
-east=10.0
-down=-5.0
-```
-
-The monitoring pipeline should not need to understand Project AirSim's NED coordinate system.
-
----
-
-## Add interfaces when capabilities exist
-
-Interfaces should describe real system boundaries rather than speculative future architecture.
-
-As new capabilities are implemented, this document should be updated to reflect the concrete structures used by the project.
-
-The immediate next interface to finalize will be `InspectionResult` when active inspection is implemented.
+- **Preserve observations separately.** The monitoring event triggers inspection; the new drone observation determines the inspection result.
+- **Preserve provenance.** Keep the source event in the request, preserve `inspection_id`, and link saved evidence through the result and trace.
+- **Preserve execution distinctions.** Arrival, inspection completion, model output, cleanup success, and mission response describe separate outcomes.
+- **Preserve uncertainty.** Failed observation uses `detected=None`; a negative model result does not assert safety.
+- **Preserve subsystem boundaries.** Perception reports observations; dispatch coordinates movement; the adapter owns simulator behavior; inspection acquires and interprets evidence.
+- **Keep coordinates explicit.** Logical monitoring regions resolve to predefined NED targets in the dispatch layer.
+- **Document implemented contracts.** Proposed mission-response fields remain future work until implemented and tested.
