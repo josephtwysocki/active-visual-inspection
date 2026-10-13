@@ -2,9 +2,9 @@
 
 This document describes the project-owned payloads passed between the major subsystems of Active Visual Inspection.
 
-**Current implementation: through Week 5, validated on October 12, 2026.**
+**Current implementation: Week 6 mission handling implemented and checked with controlled fixtures on October 13, 2026.**
 
-The implemented boundary now includes monitoring, dispatch, and active inspection. Mission decisions remain proposed Week 6 work.
+The implemented boundary includes monitoring, dispatch, active inspection, and deterministic mission decisions. Live inspection was validated in Week 5; the new outcome handling requires one live run for Week 6 closeout.
 
 ## Interface Overview
 
@@ -16,7 +16,7 @@ The implemented boundary now includes monitoring, dispatch, and active inspectio
 | `InspectionTarget` | Represent the predefined NED target for that region | `src/dispatch/search_regions.py` |
 | `DispatchResult` | Report the target, actual position, and arrival status | `src/dispatch/dispatcher.py` |
 | `InspectionResult` | Report execution status and the new drone observation | `src/inspection/inspection_result.py` |
-| `MissionOutcome` | Describe the response chosen from an inspection result | Proposed; not implemented at Week 5 closeout |
+| `MissionOutcome` | Describe the response chosen from an inspection result | `src/mission/mission_outcome.py` |
 
 The same perception implementation supports both monitoring imagery and new drone inspection imagery. These are separate observations, even when they use the same detector.
 
@@ -268,15 +268,17 @@ The caller owns connection, camera startup, takeoff, dispatch, return-home, land
 
 ## Current Execution and Evidence Trace
 
-The Week 5 live integration entry point is:
+The existing live entry point now includes Week 6 outcome handling:
 
 ```powershell
 python -m scripts.test_active_inspection
 ```
 
-It starts with a synthetic `MonitoringEvent` and uses real Project AirSim drone imagery for inspection. Monitoring inference is not rerun in this test.
+It starts with a synthetic `MonitoringEvent` and uses actual Project AirSim drone imagery for inspection. Monitoring inference is not rerun in this test.
 
-The script saves a trace with these top-level keys:
+After inspection, the script calls `evaluate_inspection(result)`, saves the outcome, and reports its reason. For review branches, terminal output identifies the inspection, reason, evidence path (or its absence), and trace path. The trace itself is the local review record; no separate notification service or approval state is implemented.
+
+The trace has these top-level keys:
 
 ```json
 {
@@ -284,17 +286,31 @@ The script saves a trace with these top-level keys:
   "inspection_evidence_source": "Project AirSim DownCamera",
   "request": {},
   "dispatch": {},
-  "inspection": {}
+  "inspection": {},
+  "outcome": {},
+  "execution_error": null,
+  "cleanup": {
+    "completed": true,
+    "errors": []
+  }
 }
 ```
 
-The empty objects above show the trace envelope only. Actual traces contain the full serialized payloads, including the monitoring event nested inside `request.source_event`.
+The empty objects show the envelope only. Actual traces contain the full serialized payloads, including the event nested inside `request.source_event`. The request, inspection, and outcome identifiers must agree.
 
-PNG evidence and `<inspection_id>_trace.json` are stored under `data/test_outputs/inspections/`. Image filenames use a separate generated identifier; `InspectionResult.evidence_path` provides the association with the request. The image filename is not the request identifier.
+PNG evidence and `<inspection_id>_trace.json` remain under `data/test_outputs/inspections/`. Image filenames use a separate generated identifier; `InspectionResult.evidence_path` links the image to the request.
 
-The trace is written before an incomplete inspection causes the integration test to raise. Errors before a result is available can terminate the script without producing this trace.
+The trace is saved immediately after evaluation, before an incomplete inspection raises. Cleanup is initially pending (`completed=null`); the trace is rewritten after cleanup with its status and errors. Setup or dispatch exceptions produce a partial trace when writing is possible, with unavailable sections set to `null`, an `execution_error`, and no invented inspection or mission outcome. Invalid detector/region configuration fails before flight begins.
 
-Cleanup attempts return-home and landing after takeoff, including after inspection failure. Landing is attempted even if return-home fails. The script does not disarm following a failed landing. It reports cleanup errors and prints `PASS` only after inspection and cleanup succeed.
+Return-home and landing remain caller-owned and are attempted after takeoff, including after inspection failure. Landing is attempted even if return-home fails. Shutdown is skipped following a failed landing. Disconnect is attempted separately. A primary inspection or execution error is preserved even if cleanup or final trace saving also fails. Cleanup errors are recorded independently and prevent `PASS`.
+
+Controlled checks run without AirSim, Roboflow, or image-analysis dependencies:
+
+```powershell
+python -m scripts.test_mission_outcome
+```
+
+These checks use explicit positive, negative, capture-failure, and perception-failure `InspectionResult` fixtures. They verify serialization, provenance, deterministic policy, malformed-input rejection, trace recording, and cleanup/error behavior. Temporary fixture traces identify their evidence as synthetic. They do not measure detector accuracy. Fifteen controlled tests passed on October 13, 2026; a Week 6 live run was also completed on this day.
 
 ### Week 5 Validation and Known Limitation
 
@@ -306,15 +322,47 @@ This run validates the live inspection pipeline. It does not validate smoke-mode
 
 ---
 
-## Future Interface — MissionOutcome
+## MissionOutcome
 
 **“Given the inspection result, this is the response the system chose.”**
 
-`MissionOutcome` remains unimplemented at Week 5 closeout. [week_6_setup.md](week_6_setup.md) proposes the initial fields `inspection_id`, `decision`, and `reason`, with deterministic responses for positive, negative, and failed inspections.
+`MissionOutcome` is implemented as a frozen dataclass in `src/mission/mission_outcome.py`.
 
-The current smoke-only observation does not classify campfires or dangerous fires. That eventual V1 distinction requires additional evidence and an explicit classification capability.
+```python
+MissionOutcome(
+    inspection_id="inspection_988cb783",
+    decision="request_human_review",
+    reason="smoke_observed",
+)
+```
 
-A future human-review decision must also remain distinct from successful notification delivery or an actual human decision.
+| Field | Meaning |
+| --- | --- |
+| `inspection_id` | Nonempty string linking the response to its inspection and trace |
+| `decision` | `terminate` or `request_human_review` |
+| `reason` | Stable observation-specific explanation from the policy below |
+
+The constructor validates values and decision/reason combinations. `to_dict()` returns a JSON-serializable dictionary. Evidence, confidence, and failure details remain on the linked `InspectionResult`.
+
+### Deterministic Policy
+
+```python
+from src.mission.decision_policy import evaluate_inspection
+
+outcome = evaluate_inspection(result)
+```
+
+| Inspection state | Decision | Reason |
+| --- | --- | --- |
+| `completed=True, detected=False` | `terminate` | `no_smoke_observed` |
+| `completed=True, detected=True` | `request_human_review` | `smoke_observed` |
+| `completed=False, detected=None` | `request_human_review` | `inspection_failed` |
+
+The policy requires an `InspectionResult`, verifies a boolean completion flag, and revalidates result field combinations. Unsupported or malformed inputs raise rather than defaulting to termination. It makes no flight, simulator, detector, file, or network calls and introduces no second confidence threshold.
+
+A negative result reports no qualifying prediction; it does not establish safety. A smoke result does not classify a dangerous fire or acceptable campfire. Failed inspection retains uncertainty. The known Week 5 false positive follows the same smoke-review branch as any positive observation.
+
+A review decision means a request was recorded locally. It does not mean notification was delivered or a person approved an action. Both decisions still require return-home, landing, and disconnect. An `inspection_failed` outcome is saved before the live script raises for the underlying inspection error.
 
 ---
 
@@ -326,4 +374,4 @@ A future human-review decision must also remain distinct from successful notific
 - **Preserve uncertainty.** Failed observation uses `detected=None`; a negative model result does not assert safety.
 - **Preserve subsystem boundaries.** Perception reports observations; dispatch coordinates movement; the adapter owns simulator behavior; inspection acquires and interprets evidence.
 - **Keep coordinates explicit.** Logical monitoring regions resolve to predefined NED targets in the dispatch layer.
-- **Document implemented contracts.** Proposed mission-response fields remain future work until implemented and tested.
+- **Document implemented contracts.** Mission response is implemented; Week 6 live verification remains a separate closeout requirement.
