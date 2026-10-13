@@ -247,20 +247,20 @@ Keep synthetic policy cases clearly identified in the test output and documentat
 
 Week 6 is complete when:
 
-- [ ] `MissionOutcome` has a concrete minimal implementation.
-- [ ] The deterministic policy consumes `InspectionResult` without simulator or Roboflow calls.
-- [ ] Positive inspection requests human review.
-- [ ] Negative inspection ends the investigation with an observation-specific reason.
-- [ ] Failed inspection requests review and remains distinct from negative detection.
-- [ ] Outcome identifiers match their inspection results.
-- [ ] Outcomes and linked evidence can be reviewed in a saved local trace.
-- [ ] A local review request is clearly distinguished from delivered notification or human approval.
-- [ ] Controlled positive, negative, and failure cases pass.
-- [ ] One live run demonstrates inspection-to-outcome handling.
-- [ ] Inspection errors still fail loudly after available outcome recording.
-- [ ] Return-home, landing, and cleanup remain caller-owned and verified.
-- [ ] `interfaces.md` describes the implemented mission interface.
-- [ ] The known false positive remains documented and its evidence retained.
+- [x] `MissionOutcome` has a concrete minimal implementation.
+- [x] The deterministic policy consumes `InspectionResult` without simulator or Roboflow calls.
+- [x] Positive inspection requests human review.
+- [x] Negative inspection ends the investigation with an observation-specific reason.
+- [x] Failed inspection requests review and remains distinct from negative detection.
+- [x] Outcome identifiers match their inspection results.
+- [x] Outcomes and linked evidence can be reviewed in a saved local trace.
+- [x] A local review request is clearly distinguished from delivered notification or human approval.
+- [x] Controlled positive, negative, and failure cases pass.
+- [x] One live run demonstrates inspection-to-outcome handling.
+- [x] Inspection errors still fail loudly after available outcome recording.
+- [x] Return-home, landing, and cleanup remain caller-owned and verified.
+- [x] `interfaces.md` describes the implemented mission interface.
+- [x] The known false positive remains documented and its evidence retained.
 
 Week 6 completion establishes deterministic mission handling. It does not establish competition submission readiness by itself.
 
