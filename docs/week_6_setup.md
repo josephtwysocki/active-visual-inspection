@@ -64,7 +64,39 @@ This establishes pipeline functionality while exposing a perception limitation. 
 - [x] Confirm the live-run image and trace remain available and record their paths in the PR.
 - [x] Commit, review, and merge the Week 5 changes.
 
-This document records functional closeout. It does not imply that the Week 5 PR has already been merged.
+Week 5 changes were reviewed and merged into main in PR #9 on October 13, 2026.
+
+---
+
+## Week 6 Implementation Checkpoint — October 13, 2026
+
+The local implementation now includes:
+
+- a validated, frozen `MissionOutcome` and JSON serialization;
+- `evaluate_inspection()` with deterministic positive, negative, and failed-inspection responses;
+- outcome recording in the existing `scripts/test_active_inspection.py` flow;
+- local review messages with identifiers, reasons, evidence, and trace paths;
+- separate cleanup status/errors saved in the final trace;
+- fifteen passing controlled tests, including the four required inspection fixtures and operational-failure handling;
+- updated `interfaces.md` documenting the implemented contracts.
+
+The controlled tests use synthetic inputs and temporary evidence. They do not demonstrate detector accuracy or live flight behavior.
+
+Run the controlled suite from the project root:
+
+```powershell
+python -m scripts.test_mission_outcome
+```
+
+Then, with Blocks running and `ROBOFLOW_API_KEY` configured in the existing environment:
+
+```powershell
+python -m scripts.test_active_inspection
+```
+
+**Remaining closeout:** inspect the live PNG and JSON trace, verify that `outcome` matches `inspection`, confirm `cleanup.completed=true` and an empty cleanup error list, and retain the new run evidence. A positive detector observation should request review even if the scene contains no intended smoke. The known Week 5 false-positive evidence remains part of evaluation and must be retained.
+
+Week 6 is not marked complete until this live check and change review are finished.
 
 ---
 
@@ -91,7 +123,7 @@ Flight cleanup remains required for every branch. A decision to terminate an inv
 
 Finalize the future interface in `interfaces.md` and implement it under `src/mission/`.
 
-The proposed initial representation is:
+The implemented initial representation is:
 
 ```python
 MissionOutcome(
@@ -107,7 +139,7 @@ MissionOutcome(
 | `decision` | Explicit mission response: `terminate` or `request_human_review` |
 | `reason` | Stable explanation: `no_smoke_observed`, `smoke_observed`, or `inspection_failed` |
 
-These are Week 6 implementation targets, not existing contracts. Validate allowed values and combinations, preserve a nonempty inspection identifier, and provide a JSON-serializable representation consistent with the existing payloads.
+These Week 6 contracts are now implemented and covered by controlled checks. The outcome validates allowed values and combinations, preserves a nonempty inspection identifier, and provides a JSON-serializable representation consistent with the existing payloads.
 
 The result and trace already contain confidence, evidence path, and failure details. Avoid copying all of that state into the outcome. Keep the association through `inspection_id` and the complete mission trace.
 
