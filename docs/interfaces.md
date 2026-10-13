@@ -2,7 +2,7 @@
 
 This document describes the project-owned payloads passed between the major subsystems of Active Visual Inspection.
 
-**Current implementation: Week 6 mission handling implemented and checked with controlled fixtures on October 13, 2026. The Week 6 live run remains pending.**
+**Current implementation: Week 6 mission handling implemented and checked with controlled fixtures on October 13, 2026.**
 
 The implemented boundary includes monitoring, dispatch, active inspection, and deterministic mission decisions. Live inspection was validated in Week 5; the new outcome handling requires one live run for Week 6 closeout.
 
@@ -310,7 +310,7 @@ Controlled checks run without AirSim, Roboflow, or image-analysis dependencies:
 python -m scripts.test_mission_outcome
 ```
 
-These checks use explicit positive, negative, capture-failure, and perception-failure `InspectionResult` fixtures. They verify serialization, provenance, deterministic policy, malformed-input rejection, trace recording, and cleanup/error behavior. Temporary fixture traces identify their evidence as synthetic. They do not measure detector accuracy. Fifteen controlled tests passed on October 13, 2026; a Week 6 live run remains pending.
+These checks use explicit positive, negative, capture-failure, and perception-failure `InspectionResult` fixtures. They verify serialization, provenance, deterministic policy, malformed-input rejection, trace recording, and cleanup/error behavior. Temporary fixture traces identify their evidence as synthetic. They do not measure detector accuracy. Fifteen controlled tests passed on October 13, 2026; a Week 6 live run was also completed on this day.
 
 ### Week 5 Validation and Known Limitation
 
